@@ -14,6 +14,8 @@ public class ProxySwitcher
     private readonly EnvironmentProxyHandler _environmentHandler;
 
     public event EventHandler? StatusChanged;
+    public event EventHandler<string>? ProgressChanged;
+    public event EventHandler<bool>? IsBusyChanged;
 
     public ProxySwitcher(
         ProfileManager profileManager,
@@ -31,7 +33,31 @@ public class ProxySwitcher
     /// <summary>
     /// Activates a proxy profile by applying its settings to the system.
     /// </summary>
-    public void ActivateProfile(string profileName)
+    public async Task ActivateProfileAsync(string profileName)
+    {
+        if (string.IsNullOrWhiteSpace(profileName))
+            throw new ArgumentException("Profile name cannot be empty.", nameof(profileName));
+
+        ProgressChanged?.Invoke(this, "Preparing profile activation...");
+        IsBusyChanged?.Invoke(this, true);
+
+        try
+        {
+            await Task.Run(() => ActivateProfileInternal(profileName));
+            ProgressChanged?.Invoke(this, "Profile activation completed.");
+        }
+        catch (Exception ex)
+        {
+            ProgressChanged?.Invoke(this, $"Activation failed: {ex.Message}");
+            throw;
+        }
+        finally
+        {
+            IsBusyChanged?.Invoke(this, false);
+        }
+    }
+
+    private void ActivateProfileInternal(string profileName)
     {
         var profile = _profileManager.GetProfile(profileName);
         if (profile == null)
@@ -39,28 +65,28 @@ public class ProxySwitcher
 
         try
         {
-            // First deactivate any currently active proxy
+            ProgressChanged?.Invoke(this, "Checking active proxy profile...");
             var previousProfile = _profileManager.GetActiveProfile();
             if (previousProfile != null)
             {
-                DeactivateProxy();
+                ProgressChanged?.Invoke(this, "Clearing currently active proxy...");
+                DeactivateProxyInternal(previousProfile);
             }
 
-            // Apply system proxy if enabled in profile
             if (profile.EnableSystemProxy)
             {
+                ProgressChanged?.Invoke(this, "Applying system proxy settings...");
                 _registryHandler.ApplySystemProxy(profile.Host, profile.Port);
             }
 
-            // Set environment variables if enabled in profile
             if (profile.EnableEnvironmentVariables)
             {
+                ProgressChanged?.Invoke(this, "Setting environment variables...");
                 _environmentHandler.SetEnvironmentVariables(profile.Host, profile.Port);
             }
 
-            // Mark profile as active in ProfileManager
+            ProgressChanged?.Invoke(this, "Saving active profile...");
             _profileManager.SetActiveProfile(profileName);
-
             StatusChanged?.Invoke(this, EventArgs.Empty);
         }
         catch (UnauthorizedAccessException ex)
@@ -76,29 +102,56 @@ public class ProxySwitcher
     /// <summary>
     /// Deactivates the currently active proxy.
     /// </summary>
-    public void DeactivateProxy()
+    public async Task DeactivateProxyAsync()
+    {
+        ProgressChanged?.Invoke(this, "Preparing to disable proxy...");
+        IsBusyChanged?.Invoke(this, true);
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                var activeProfile = _profileManager.GetActiveProfile();
+                if (activeProfile == null)
+                {
+                    ProgressChanged?.Invoke(this, "No active proxy to disable.");
+                    return;
+                }
+
+                DeactivateProxyInternal(activeProfile);
+            });
+
+            ProgressChanged?.Invoke(this, "Proxy disabled.");
+        }
+        catch (Exception ex)
+        {
+            ProgressChanged?.Invoke(this, $"Disable failed: {ex.Message}");
+            throw;
+        }
+        finally
+        {
+            IsBusyChanged?.Invoke(this, false);
+        }
+    }
+
+    private void DeactivateProxyInternal(ProxyProfile activeProfile)
     {
         try
         {
-            var activeProfile = _profileManager.GetActiveProfile();
-            if (activeProfile == null)
-                return; // No active profile to deactivate
-
-            // Disable system proxy if it was enabled
+            ProgressChanged?.Invoke(this, "Clearing system proxy settings...");
             if (activeProfile.EnableSystemProxy)
             {
                 _registryHandler.ClearSystemProxy();
             }
 
-            // Clear environment variables if they were enabled
+            ProgressChanged?.Invoke(this, "Clearing environment variables...");
             if (activeProfile.EnableEnvironmentVariables)
             {
                 _environmentHandler.ClearEnvironmentVariables();
             }
 
-            // Clear active profile
+            ProgressChanged?.Invoke(this, "Saving deactivated state...");
             _profileManager.ClearActiveProfile();
-
             StatusChanged?.Invoke(this, EventArgs.Empty);
         }
         catch (UnauthorizedAccessException ex)

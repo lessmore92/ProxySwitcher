@@ -1,4 +1,9 @@
 ﻿using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows;
 using System.Windows.Forms;
 using ProxySwitcher.Data;
@@ -12,11 +17,17 @@ namespace ProxySwitcher;
 /// </summary>
 public partial class App : System.Windows.Application
 {
+    private const string SingleInstanceMutexName = "Global\\ProxySwitcherSingleInstanceMutex";
+    private const string RestoreEventName = "Global\\ProxySwitcherRestoreEvent";
+
     private NotifyIcon? _notifyIcon;
     private ContextMenuStrip? _contextMenu;
     private ToolStripMenuItem? _profilesMenu;
     private ToolStripMenuItem? _disableItem;
     private ToolStripMenuItem? _statusItem;
+
+    private Icon? _trayIcon;
+    private Icon? _trayIconDisabled;
 
     private MainWindow? _mainWindow;
 
@@ -26,10 +37,20 @@ public partial class App : System.Windows.Application
     private EnvironmentProxyHandler? _environmentHandler;
     private ProxySwitcher.Services.ProxySwitcher? _proxySwitcher;
 
+    private Mutex? _singleInstanceMutex;
+    private EventWaitHandle? _restoreEvent;
+    private RegisteredWaitHandle? _restoreWaitHandle;
+
     private bool _isExiting;
 
     private void App_Startup(object sender, StartupEventArgs e)
     {
+        if (!InitializeSingleInstance())
+        {
+            Shutdown();
+            return;
+        }
+
         // Keep app alive even when no window is shown (tray-only).
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
@@ -79,11 +100,50 @@ public partial class App : System.Windows.Application
         _mainWindow.Focus();
     }
 
+    private bool InitializeSingleInstance()
+    {
+        try
+        {
+            _singleInstanceMutex = new Mutex(true, SingleInstanceMutexName, out var createdNew);
+            if (!createdNew)
+            {
+                try
+                {
+                    _restoreEvent = EventWaitHandle.OpenExisting(RestoreEventName);
+                    _restoreEvent.Set();
+                }
+                catch
+                {
+                    // Existing instance may not yet have created the event.
+                }
+
+                return false;
+            }
+
+            _restoreEvent = new EventWaitHandle(false, EventResetMode.AutoReset, RestoreEventName);
+            _restoreWaitHandle = ThreadPool.RegisterWaitForSingleObject(
+                _restoreEvent,
+                (_, _) => Dispatcher.InvokeAsync(ShowMainWindow),
+                null,
+                Timeout.Infinite,
+                false);
+
+            return true;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
     private void SetupTrayIcon()
     {
+        _trayIcon = LoadAppIcon() ?? SystemIcons.Application;
+        _trayIconDisabled = CreateDisabledIcon(_trayIcon) ?? _trayIcon;
+
         _notifyIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = _trayIcon,
             Visible = true,
             Text = "Proxy Switcher"
         };
@@ -114,6 +174,97 @@ public partial class App : System.Windows.Application
         _notifyIcon.ContextMenuStrip = _contextMenu;
         _notifyIcon.DoubleClick += (_, _) => ShowMainWindow();
     }
+
+    private Icon? LoadAppIcon()
+    {
+        try
+        {
+            var uri = new Uri("pack://application:,,,/Assets/app.ico");
+            var resourceStream = System.Windows.Application.GetResourceStream(uri);
+
+            if (resourceStream != null)
+                return new Icon(resourceStream.Stream);
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+        /*
+        try
+        {
+            var entryAssembly = Assembly.GetEntryAssembly();
+            if (entryAssembly == null)
+                return null;
+
+var resourceName = entryAssembly.GetManifestResourceNames()
+    .FirstOrDefault(n => n.EndsWith("app.ico", StringComparison.OrdinalIgnoreCase));
+
+            if (!string.IsNullOrEmpty(resourceName))
+            {
+                using var stream = entryAssembly.GetManifestResourceStream(resourceName);
+                if (stream != null)
+                    return new Icon(stream);
+            }
+
+            var executablePath = entryAssembly.Location;
+            if (!string.IsNullOrEmpty(executablePath) && File.Exists(executablePath))
+                return Icon.ExtractAssociatedIcon(executablePath);
+
+            var assetPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "app.ico");
+            if (File.Exists(assetPath))
+                return new Icon(assetPath);
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+        */
+
+    }
+
+    private Icon? CreateDisabledIcon(Icon? sourceIcon)
+    {
+        if (sourceIcon == null)
+            return null;
+
+        using var bitmap = sourceIcon.ToBitmap();
+        using var grayBitmap = new Bitmap(bitmap.Width, bitmap.Height);
+        using (var graphics = Graphics.FromImage(grayBitmap))
+        {
+            var colorMatrix = new ColorMatrix(new float[][]
+            {
+                new float[] {0.3f, 0.3f, 0.3f, 0, 0},
+                new float[] {0.3f, 0.3f, 0.3f, 0, 0},
+                new float[] {0.3f, 0.3f, 0.3f, 0, 0},
+                new float[] {0, 0, 0, 1, 0},
+                new float[] {0, 0, 0, 0, 1}
+            });
+
+            using var attributes = new ImageAttributes();
+            attributes.SetColorMatrix(colorMatrix);
+            graphics.DrawImage(bitmap, new Rectangle(0, 0, bitmap.Width, bitmap.Height), 0, 0, bitmap.Width, bitmap.Height, GraphicsUnit.Pixel, attributes);
+        }
+
+        var handle = grayBitmap.GetHicon();
+        try
+        {
+            var icon = Icon.FromHandle(handle);
+            var clonedIcon = (Icon)icon.Clone();
+            icon.Dispose();
+            return clonedIcon;
+        }
+        finally
+        {
+            DestroyIcon(handle);
+        }
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     private void RefreshProfilesMenu()
     {
@@ -163,20 +314,17 @@ public partial class App : System.Windows.Application
             var activeProfile = _profileManager.GetActiveProfile();
 
             string text;
-            if (status.IsEnabled && activeProfile != null)
+            if (status.IsEnabled)
             {
-                text = $"Proxy ON - {activeProfile.Name} ({status.ProxyHost}:{status.ProxyPort})";
-                _notifyIcon.Icon = SystemIcons.Shield;
-            }
-            else if (status.IsEnabled)
-            {
-                text = $"Proxy ON - {status.ProxyHost}:{status.ProxyPort}";
-                _notifyIcon.Icon = SystemIcons.Shield;
+                text = activeProfile != null
+                    ? $"Proxy ON - {activeProfile.Name} ({status.ProxyHost}:{status.ProxyPort})"
+                    : $"Proxy ON - {status.ProxyHost}:{status.ProxyPort}";
+                _notifyIcon.Icon = _trayIcon ?? SystemIcons.Application;
             }
             else
             {
                 text = "Proxy: Disabled";
-                _notifyIcon.Icon = SystemIcons.Application;
+                _notifyIcon.Icon = _trayIconDisabled ?? _trayIcon ?? SystemIcons.Application;
             }
 
             // NotifyIcon.Text has a 63-char limit on older Windows versions.
@@ -197,13 +345,13 @@ public partial class App : System.Windows.Application
         }
     }
 
-    private void TrayActivateProfile(string profileName)
+    private async void TrayActivateProfile(string profileName)
     {
         if (_proxySwitcher == null) return;
 
         try
         {
-            _proxySwitcher.ActivateProfile(profileName);
+            await _proxySwitcher.ActivateProfileAsync(profileName);
             _notifyIcon?.ShowBalloonTip(
                 2000,
                 "Proxy Switcher",
@@ -224,13 +372,13 @@ public partial class App : System.Windows.Application
         }
     }
 
-    private void TrayDisableProxy()
+    private async void TrayDisableProxy()
     {
         if (_proxySwitcher == null) return;
 
         try
         {
-            _proxySwitcher.DeactivateProxy();
+            await _proxySwitcher.DeactivateProxyAsync();
             _notifyIcon?.ShowBalloonTip(
                 2000,
                 "Proxy Switcher",
@@ -281,12 +429,22 @@ public partial class App : System.Windows.Application
             _notifyIcon = null;
         }
 
+        _trayIcon?.Dispose();
+        _trayIcon = null;
+        _trayIconDisabled?.Dispose();
+        _trayIconDisabled = null;
+
         if (_mainWindow != null)
         {
             _mainWindow.AllowClose = true;
             _mainWindow.Close();
             _mainWindow = null;
         }
+
+        _restoreWaitHandle?.Unregister(null);
+        _restoreEvent?.Close();
+        _singleInstanceMutex?.ReleaseMutex();
+        _singleInstanceMutex?.Dispose();
 
         Current.Shutdown();
     }
@@ -299,6 +457,21 @@ public partial class App : System.Windows.Application
             _notifyIcon.Dispose();
             _notifyIcon = null;
         }
+
+        _trayIcon?.Dispose();
+        _trayIcon = null;
+        _trayIconDisabled?.Dispose();
+        _trayIconDisabled = null;
+
+        _restoreWaitHandle?.Unregister(null);
+        _restoreEvent?.Close();
+        if (_singleInstanceMutex != null)
+        {
+            try { _singleInstanceMutex.ReleaseMutex(); } catch { }
+            _singleInstanceMutex.Dispose();
+            _singleInstanceMutex = null;
+        }
+
         base.OnExit(e);
     }
 }

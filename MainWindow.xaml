@@ -27,7 +27,12 @@
     </Window.Resources>
 
     <Grid>
-        <StackPanel Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="15">
             <!-- Status Section -->
             <Border BorderBrush="#CCCCCC" BorderThickness="1" Padding="15" CornerRadius="5" Background="White" Margin="0,0,0,15">
                 <StackPanel>
@@ -109,5 +114,14 @@
                        MinHeight="40"
                        FontSize="11"/>
         </StackPanel>
+
+        <StatusBar Grid.Row="1" Background="#FFFFFF" BorderBrush="#CCCCCC" BorderThickness="1,1,0,0" Padding="5">
+            <StatusBarItem>
+                <TextBlock x:Name="StepStatusTextBlock" Text="Ready" />
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <ProgressBar x:Name="OperationProgressBar" Width="180" Height="16" IsIndeterminate="True" Visibility="Collapsed"/>
+            </StatusBarItem>
+        </StatusBar>
     </Grid>
 </Window>

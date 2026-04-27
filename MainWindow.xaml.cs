@@ -1,4 +1,5 @@
-﻿using System.Windows;
+﻿using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Media;
 using ProxySwitcher.Models;
 using ProxySwitcher.Services;
@@ -34,6 +35,8 @@ public partial class MainWindow : Window
         _profileManager.ProfilesChanged += ProfileManager_ProfilesChanged;
         _profileManager.ActiveProfileChanged += ProfileManager_ActiveProfileChanged;
         _proxySwitcher.StatusChanged += ProxySwitcher_StatusChanged;
+        _proxySwitcher.ProgressChanged += ProxySwitcher_ProgressChanged;
+        _proxySwitcher.IsBusyChanged += ProxySwitcher_IsBusyChanged;
 
         Loaded += MainWindow_Loaded;
     }
@@ -128,6 +131,40 @@ public partial class MainWindow : Window
         Dispatcher.Invoke(UpdateStatus);
     }
 
+    private void ProxySwitcher_ProgressChanged(object? sender, string? message)
+    {
+        if (message == null)
+            return;
+
+        Dispatcher.Invoke(() => SetOperationStatus(message));
+    }
+
+    private void ProxySwitcher_IsBusyChanged(object? sender, bool isBusy)
+    {
+        Dispatcher.Invoke(() => SetOperationBusy(isBusy));
+    }
+
+    private void SetOperationStatus(string message)
+    {
+        StepStatusTextBlock.Text = message;
+    }
+
+    private void SetOperationBusy(bool isBusy)
+    {
+        OperationProgressBar.Visibility = isBusy ? Visibility.Visible : Visibility.Collapsed;
+        ActivateButton.IsEnabled = !isBusy;
+        CreateButton.IsEnabled = !isBusy;
+        EditButton.IsEnabled = !isBusy;
+        DeleteButton.IsEnabled = !isBusy;
+        DisableButton.IsEnabled = !isBusy;
+        ProfilesListBox.IsEnabled = !isBusy;
+
+        if (!isBusy && string.IsNullOrWhiteSpace(StepStatusTextBlock.Text))
+        {
+            StepStatusTextBlock.Text = "Ready";
+        }
+    }
+
     private void CreateButton_Click(object sender, RoutedEventArgs e)
     {
         var formWindow = new ProfileFormWindow(_profileManager) { Owner = this };
@@ -154,7 +191,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void DeleteButton_Click(object sender, RoutedEventArgs e)
+    private async void DeleteButton_Click(object sender, RoutedEventArgs e)
     {
         if (ProfilesListBox.SelectedItem is not ProxyProfile profile)
         {
@@ -175,7 +212,7 @@ public partial class MainWindow : Window
                 // If the profile being deleted is currently active, deactivate the proxy first.
                 if (_profileManager.GetActiveProfileName() == profile.Name)
                 {
-                    try { _proxySwitcher.DeactivateProxy(); } catch { /* best-effort */ }
+                    try { await _proxySwitcher.DeactivateProxyAsync(); } catch { /* best-effort */ }
                 }
 
                 _profileManager.DeleteProfile(profile.Name);
@@ -189,7 +226,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ActivateButton_Click(object sender, RoutedEventArgs e)
+    private async void ActivateButton_Click(object sender, RoutedEventArgs e)
     {
         if (ProfilesListBox.SelectedItem is not ProxyProfile profile)
         {
@@ -197,22 +234,22 @@ public partial class MainWindow : Window
             return;
         }
 
-        ActivateProfile(profile.Name);
+        await ActivateProfileAsync(profile.Name);
     }
 
-    private void ProfilesListBox_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    private async void ProfilesListBox_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         if (ProfilesListBox.SelectedItem is ProxyProfile profile)
         {
-            ActivateProfile(profile.Name);
+            await ActivateProfileAsync(profile.Name);
         }
     }
 
-    private void ActivateProfile(string profileName)
+    private async Task ActivateProfileAsync(string profileName)
     {
         try
         {
-            _proxySwitcher.ActivateProfile(profileName);
+            await _proxySwitcher.ActivateProfileAsync(profileName);
             InfoTextBlock.Text = $"Profile '{profileName}' activated successfully.";
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("Administrator privileges required"))
@@ -226,11 +263,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private void DisableButton_Click(object sender, RoutedEventArgs e)
+    private async void DisableButton_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            _proxySwitcher.DeactivateProxy();
+            await _proxySwitcher.DeactivateProxyAsync();
             InfoTextBlock.Text = "Proxy disabled successfully.";
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("Administrator privileges required"))

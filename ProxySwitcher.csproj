@@ -10,6 +10,11 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <RootNamespace>ProxySwitcher</RootNamespace>
     <AssemblyName>ProxySwitcher</AssemblyName>
+    <ApplicationIcon>Assets\\app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
 
 </Project>
